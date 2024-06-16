@@ -1,17 +1,18 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"net/http"
+	"net/smtp"
 	"time"
-    "github.com/jinzhu/gorm"
-    _ "github.com/go-sql-driver/mysql"
-    "log"
+
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
-    "crypto/rand"
-    "encoding/hex"
-    "fmt"
-    "log"
-    "net/http"
-    "net/smtp"
+	"github.com/jinzhu/gorm"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // github.com/jinzhu/gorm: GORM is an ORM (Object Relational Mapper) library for Go, which simplifies interactions with the database.
@@ -46,12 +47,86 @@ func initDB(){
 }
 
 
-func registerUser(w http.ResponseWriter, r *http.Request){
+func generateToken() string {
+    bytes := make([]byte, 16)
+    rand.Read(bytes)
+    return hex.EncodeToString(bytes)
+}
+
+func sendVerificationEmail(email, token string) error {
+    from := "your-email@example.com"
+    password := "your-email-password"
+
+    to := []string{email}
+    smtpHost := "smtp.example.com"
+    smtpPort := "587"
+
+    message := []byte(fmt.Sprintf("Subject: Email Verification\n\nPlease verify your email using this link: http://localhost:8080/verify?token=%s", token))
+
+    auth := smtp.PlainAuth("", from, password, smtpHost)
+    return smtp.SendMail(smtpHost+":"+smtpPort, auth, from, to, message)
+}
+
+
+func hashPassword(password string) string{
+	hashedPassword,err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+        return ""
+    }
+    return string(hashedPassword)
 
 }
 
-func verifyUser(w http.ResponseWriter, r *http.Request){
-	
+func registerUser(w http.ResponseWriter, r *http.Request){
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+
+	passwordHashValue := hashPassword(password)
+
+	token := generateToken()
+
+	user := User{
+		Email:             email,
+        PasswordHash:      passwordHashValue,
+        VerificationToken: token,
+	}
+
+	if err := db.Create(&user).Error;  
+	err!=nil {
+		http.Error(w, "Could not create user", http.StatusInternalServerError)
+        return
+	}
+
+	if err := sendVerificationEmail(user.Email, token); err != nil {
+        http.Error(w, "Could not send verification email", http.StatusInternalServerError)
+        return
+    }
+
+    fmt.Fprintln(w, "Registration successful! Please check your email to verify your account.")
+}
+
+func verifyUser(w http.ResponseWriter, r *http.Request) {
+    token := r.URL.Query().Get("token")
+    if token == "" {
+        http.Error(w, "Invalid token", http.StatusBadRequest)
+        return
+    }
+
+    var user User
+    if err := db.Where("verification_token = ?", token).First(&user).Error; err != nil {
+        http.Error(w, "Invalid token", http.StatusBadRequest)
+        return
+    }
+
+    user.IsVerified = true
+    user.VerificationToken = ""
+
+    if err := db.Save(&user).Error; err != nil {
+        http.Error(w, "Could not verify user", http.StatusInternalServerError)
+        return
+    }
+
+    fmt.Fprintln(w, "Email verified successfully!")
 }
 
 
